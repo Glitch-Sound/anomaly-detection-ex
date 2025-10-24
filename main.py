@@ -8,7 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -76,6 +76,8 @@ LEARNING_RATE = 1e-3
 THRESHOLD_QUANTILE = 0.995
 NO_HEATMAP_MARGIN = 5.0
 NUM_WORKERS = 0
+HEATMAP_RAW_MIN = None
+HEATMAP_RAW_MAX = None
 CONFIG_SECTION = "AI"
 CONFIG_FIELDS = {
     "PATCH_SIZE": ("PATCH_SIZE", int),
@@ -87,6 +89,8 @@ CONFIG_FIELDS = {
     "THRESHOLD_QUANTILE": ("THRESHOLD_QUANTILE", float),
     "NO_HEATMAP_MARGIN": ("NO_HEATMAP_MARGIN", float),
     "NUM_WORKERS": ("NUM_WORKERS", int),
+    "HEATMAP_RAW_MIN": ("HEATMAP_RAW_MIN", float),
+    "HEATMAP_RAW_MAX": ("HEATMAP_RAW_MAX", float),
 }
 MODEL_DIR = Path("model")
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -732,6 +736,17 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
                 .cpu()
                 .numpy()
             )
+            raw_score_map = (
+                F.interpolate(
+                    raw_patch_map.unsqueeze(1),
+                    size=image_tensor.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
             image_score_norm = float(normalized_map.max().item())
             score_mean_norm = float(normalized_map.mean().item())
             image_score_raw = float(anomaly_map.max().item())
@@ -749,7 +764,11 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
             if skip_heatmap:
                 cv2.imwrite(str(save_path), original_image)
             else:
-                overlay = create_heatmap_overlay(original_image, score_map)
+                overlay = create_heatmap_overlay(
+                    original_image,
+                    score_map,
+                    raw_score_map=raw_score_map,
+                )
                 cv2.imwrite(str(save_path), overlay)
             print(
                 f"{path_obj.name}: score_norm={image_score_norm:.4f} raw={image_score_raw:.4f} threshold={artifacts.threshold:.4f} predict={predicted} skip_heatmap={skip_heatmap}"
@@ -768,16 +787,45 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
 
 
 def create_heatmap_overlay(
-    image_bgr: np.ndarray, score_map: np.ndarray, alpha: float = 0.6
+    image_bgr: np.ndarray,
+    score_map: np.ndarray,
+    raw_score_map: Optional[np.ndarray] = None,
+    alpha: float = 0.6,
 ) -> np.ndarray:
-    norm_map = cv2.normalize(score_map, None, 0, 255, cv2.NORM_MINMAX)
-    heatmap = cv2.applyColorMap(norm_map.astype(np.uint8), cv2.COLORMAP_JET)
+    use_global_scale = (
+        raw_score_map is not None
+        and HEATMAP_RAW_MIN is not None
+        and HEATMAP_RAW_MAX is not None
+        and HEATMAP_RAW_MAX > HEATMAP_RAW_MIN
+    )
+    if use_global_scale:
+        min_val = float(HEATMAP_RAW_MIN)
+        max_val = float(HEATMAP_RAW_MAX)
+        scale = (raw_score_map - min_val) / (max_val - min_val)
+        scale = np.clip(scale, 0.0, 1.0)
+        norm_map = (scale * 255.0).astype(np.uint8)
+        mask = raw_score_map >= min_val
+    else:
+        norm_map = cv2.normalize(score_map, None, 0, 255, cv2.NORM_MINMAX)
+        norm_map = norm_map.astype(np.uint8)
+        mask = None
+
+    heatmap = cv2.applyColorMap(norm_map, cv2.COLORMAP_JET)
     resized = cv2.resize(
         heatmap,
         (image_bgr.shape[1], image_bgr.shape[0]),
         interpolation=cv2.INTER_LINEAR,
     )
-    overlay = cv2.addWeighted(resized, alpha, image_bgr, 1 - alpha, 0)
+    blended = cv2.addWeighted(resized, alpha, image_bgr, 1 - alpha, 0)
+    if not use_global_scale:
+        return blended
+
+    mask_resized = cv2.resize(
+        mask.astype(np.uint8),
+        (image_bgr.shape[1], image_bgr.shape[0]),
+        interpolation=cv2.INTER_NEAREST,
+    ).astype(bool)
+    overlay = np.where(mask_resized[..., None], blended, image_bgr)
     return overlay
 
 
@@ -791,7 +839,7 @@ if __name__ == "__main__":
         print(sys.version)
 
         print("start train.")
-        train(path_config, path_train, path_param)
+        # train(path_config, path_train, path_param)
 
         print("start test.")
         test(path_config, path_test, path_param, path_result)
