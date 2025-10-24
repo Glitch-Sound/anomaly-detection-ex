@@ -20,6 +20,8 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 
+ENABLE_LOGFILE = False
+
 _albucore_utils = None
 try:
     _albucore_utils = importlib.import_module("albucore.utils")
@@ -144,10 +146,12 @@ def load_pretrained_model(model_variant: str) -> nn.Module:
 
 
 LOG_DIR = Path("log")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRAIN_LOG_PATH = LOG_DIR / "training.csv"
 DETECTION_LOG_PATH = LOG_DIR / "detection.csv"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+if ENABLE_LOGFILE:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_device() -> torch.device:
@@ -258,13 +262,14 @@ class ViTFeatureExtractor(nn.Module):
 
 
 def _append_log_row(path: Path, header: Sequence[str], row: Sequence) -> None:
-    exists = path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", newline="") as fp:
-        writer = csv.writer(fp)
-        if not exists:
-            writer.writerow(header)
-        writer.writerow(row)
+    if ENABLE_LOGFILE:
+        exists = path.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", newline="") as fp:
+            writer = csv.writer(fp)
+            if not exists:
+                writer.writerow(header)
+            writer.writerow(row)
 
 
 def log_training_run(artifacts: "TrainingArtifacts", dataset_size: int) -> None:
