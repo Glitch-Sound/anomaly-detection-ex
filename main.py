@@ -145,6 +145,16 @@ def load_pretrained_model(model_variant: str) -> nn.Module:
     return model
 
 
+def _parse_layer_indices(raw_value: str) -> List[int]:
+    tokens = raw_value.replace(",", " ").replace("|", " ").split()
+    if not tokens:
+        raise ValueError("レイヤ番号が指定されていません。")
+    try:
+        return [int(token) for token in tokens]
+    except ValueError as exc:
+        raise ValueError(f"レイヤ番号の解析に失敗しました: {raw_value}") from exc
+
+
 LOG_DIR = Path("log")
 TRAIN_LOG_PATH = LOG_DIR / "training.csv"
 DETECTION_LOG_PATH = LOG_DIR / "detection.csv"
@@ -510,6 +520,23 @@ def set_config(path_config: str) -> None:
         except ValueError as exc:
             raise ValueError(f"設定値 {key} の形式が不正です: {raw_value}") from exc
         global_vars[var_name] = converted
+
+    def _apply_layer_config(config_key: str, variant_name: str) -> None:
+        raw_layers = section.get(config_key, "")
+        if not raw_layers or raw_layers.strip() == "":
+            return
+        try:
+            parsed_layers = _parse_layer_indices(raw_layers)
+        except ValueError as exc:
+            raise ValueError(
+                f"設定値 {config_key} の形式が不正です: {raw_layers}"
+            ) from exc
+        MODEL_VARIANTS.setdefault(variant_name, {})["layer_indices"] = parsed_layers
+
+    _apply_layer_config("LAYER_INDICES", MODEL_VARIANT_DEFAULT)
+    for variant_name in list(MODEL_VARIANTS.keys()):
+        specific_key = f"LAYER_INDICES_{variant_name}"
+        _apply_layer_config(specific_key, variant_name)
 
 
 def train(path_config: str, path_train_good: str, path_param: str) -> None:
