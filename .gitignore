@@ -20,6 +20,7 @@ build/
 *.pth
 
 # Dir.
+00_bak/
 data/
 model/
 param/

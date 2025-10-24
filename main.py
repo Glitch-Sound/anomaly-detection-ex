@@ -8,7 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -54,7 +54,7 @@ from albumentations.pytorch.transforms import ToTensorV2
 # =========================
 # ハイパーパラメータ定義
 # =========================
-MODEL_VARIANT_DEFAULT = "deit_base_distilled_patch16_384"
+MODEL_VARIANT_DEFAULT = "deit_base_distilled_patch16_224"
 MODEL_VARIANTS = {
     "deit_base_distilled_patch16_384": {
         "image_size": 384,
@@ -105,6 +105,44 @@ else:
         setter_alt = getattr(timm_hub, "set_default_cache_dir", None)
         if callable(setter_alt):
             setter_alt(model_cache_dir)
+
+PRETRAINED_MODEL_FILES: Dict[str, str] = {
+    "deit_base_distilled_patch16_224": "deit_base_distilled_patch16_224.pth",
+    "deit_base_distilled_patch16_384": "deit_base_distilled_patch16_384.pth",
+}
+
+
+def _download_pretrained_model(model_variant: str, weight_path: Path) -> nn.Module:
+    model = timm.create_model(model_variant, pretrained=True)
+    weight_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), weight_path)
+    return model
+
+
+def load_pretrained_model(model_variant: str) -> nn.Module:
+    model = timm.create_model(model_variant, pretrained=False)
+    weight_name = PRETRAINED_MODEL_FILES.get(model_variant, f"{model_variant}.pth")
+    weight_path = MODEL_DIR / weight_name
+    if not weight_path.exists():
+        return _download_pretrained_model(model_variant, weight_path)
+    checkpoint = torch.load(weight_path, map_location="cpu")
+    state_dict = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
+    if state_dict is None and isinstance(checkpoint, dict):
+        state_dict = checkpoint.get("model")
+    if state_dict is None:
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint
+        else:
+            raise RuntimeError(f"{weight_path} から状態辞書を読み取れませんでした。")
+    state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        raise RuntimeError(f"読み込み時に欠損したキーがあります: {missing}")
+    if unexpected:
+        raise RuntimeError(f"読み込み時に想定外のキーがあります: {unexpected}")
+    return model
+
+
 LOG_DIR = Path("log")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRAIN_LOG_PATH = LOG_DIR / "training.csv"
@@ -169,7 +207,7 @@ class ImageFolderDataset(Dataset):
 class ViTFeatureExtractor(nn.Module):
     def __init__(self, model_variant: str, layer_indices: Sequence[int]):
         super().__init__()
-        self.model = timm.create_model(model_variant, pretrained=True)
+        self.model = load_pretrained_model(model_variant)
         for param in self.model.parameters():
             param.requires_grad_(False)
         self.model.eval()
@@ -248,8 +286,12 @@ def log_training_run(artifacts: "TrainingArtifacts", dataset_size: int) -> None:
         "avg_patch_std",
         "no_heatmap_margin",
     ]
-    avg_patch_mean = float(np.mean(artifacts.patch_means)) if artifacts.patch_means else 0.0
-    avg_patch_std = float(np.mean(artifacts.patch_stds)) if artifacts.patch_stds else 0.0
+    avg_patch_mean = (
+        float(np.mean(artifacts.patch_means)) if artifacts.patch_means else 0.0
+    )
+    avg_patch_std = (
+        float(np.mean(artifacts.patch_stds)) if artifacts.patch_stds else 0.0
+    )
     layer_indices_str = "|".join(map(str, artifacts.layer_indices))
     row = [
         datetime.utcnow().isoformat(timespec="seconds"),
@@ -436,7 +478,9 @@ def set_config(path_config: str) -> None:
         with config_path.open("r", encoding="utf-8") as fp:
             parser.read_file(fp)
     except Exception as exc:  # noqa: PERF203
-        raise RuntimeError(f"設定ファイルの読み込みに失敗しました: {config_path}") from exc
+        raise RuntimeError(
+            f"設定ファイルの読み込みに失敗しました: {config_path}"
+        ) from exc
 
     if CONFIG_SECTION not in parser:
         raise KeyError(f"設定ファイルにセクション[{CONFIG_SECTION}]が存在しません。")
@@ -459,9 +503,7 @@ def set_config(path_config: str) -> None:
         try:
             converted = _cast(raw_value, caster)
         except ValueError as exc:
-            raise ValueError(
-                f"設定値 {key} の形式が不正です: {raw_value}"
-            ) from exc
+            raise ValueError(f"設定値 {key} の形式が不正です: {raw_value}") from exc
         global_vars[var_name] = converted
 
 
@@ -486,9 +528,9 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
         pin_memory=torch.cuda.is_available(),
     )
     extractor = ViTFeatureExtractor(model_variant, layer_indices).to(device)
-    flow_model = FastFlowNF(
-        extractor.output_dim, FLOW_HIDDEN_RATIO, FLOW_STEPS
-    ).to(device)
+    flow_model = FastFlowNF(extractor.output_dim, FLOW_HIDDEN_RATIO, FLOW_STEPS).to(
+        device
+    )
     optimizer = Adam(flow_model.parameters(), lr=LEARNING_RATE)
     flow_model.train()
     num_patches: int | None = None
@@ -511,7 +553,7 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
             epoch_loss += loss.item()
             batch_count += 1
         avg_loss = epoch_loss / max(batch_count, 1)
-        print(f"epoch {epoch+1}/{TRAIN_EPOCHS} loss={avg_loss:.6f}")
+        print(f"epoch {epoch + 1}/{TRAIN_EPOCHS} loss={avg_loss:.6f}")
     flow_model.eval()
     patch_scores: List[torch.Tensor] = []
     with torch.no_grad():
@@ -561,14 +603,18 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
     set_config(path_config)
     param_path = Path(path_param)
     if not param_path.exists():
-        raise FileNotFoundError("学習済みパラメータが存在しません。先に train() を実行してください。")
+        raise FileNotFoundError(
+            "学習済みパラメータが存在しません。先に train() を実行してください。"
+        )
     state = torch.load(param_path, map_location="cpu")
     if "num_patches" not in state and "image_size" in state and "patch_size" in state:
         approx = (state["image_size"] // state["patch_size"]) ** 2
         state["num_patches"] = approx
     num_patches_state = state.get("num_patches")
     if num_patches_state is None:
-        raise RuntimeError("学習済みパラメータにパッチ数が含まれていません。再学習してください。")
+        raise RuntimeError(
+            "学習済みパラメータにパッチ数が含まれていません。再学習してください。"
+        )
     if "layer_indices" not in state or not state["layer_indices"]:
         default_layers = MODEL_VARIANTS.get(
             state.get("model_variant", MODEL_VARIANT_DEFAULT),
@@ -607,7 +653,9 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
         pin_memory=torch.cuda.is_available(),
     )
     device = get_device()
-    extractor = ViTFeatureExtractor(artifacts.model_variant, artifacts.layer_indices).to(device)
+    extractor = ViTFeatureExtractor(
+        artifacts.model_variant, artifacts.layer_indices
+    ).to(device)
     flow_model = FastFlowNF(
         artifacts.embed_dim, artifacts.flow_hidden_ratio, artifacts.flow_steps
     ).to(device)
@@ -657,7 +705,7 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
             image_score_raw = float(anomaly_map.max().item())
             score_mean_raw = float(anomaly_map.mean().item())
             predicted = "error" if image_score_norm > artifacts.threshold else "good"
-            skip_heatmap = abs(image_score_norm - artifacts.threshold) <= NO_HEATMAP_MARGIN
+            skip_heatmap = (image_score_norm - artifacts.threshold) <= NO_HEATMAP_MARGIN
             save_dir = result_root / label
             save_dir.mkdir(parents=True, exist_ok=True)
             path_obj = Path(paths[0])
@@ -687,10 +735,16 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
             )
 
 
-def create_heatmap_overlay(image_bgr: np.ndarray, score_map: np.ndarray, alpha: float = 0.6) -> np.ndarray:
+def create_heatmap_overlay(
+    image_bgr: np.ndarray, score_map: np.ndarray, alpha: float = 0.6
+) -> np.ndarray:
     norm_map = cv2.normalize(score_map, None, 0, 255, cv2.NORM_MINMAX)
     heatmap = cv2.applyColorMap(norm_map.astype(np.uint8), cv2.COLORMAP_JET)
-    resized = cv2.resize(heatmap, (image_bgr.shape[1], image_bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(
+        heatmap,
+        (image_bgr.shape[1], image_bgr.shape[0]),
+        interpolation=cv2.INTER_LINEAR,
+    )
     overlay = cv2.addWeighted(resized, alpha, image_bgr, 1 - alpha, 0)
     return overlay
 
