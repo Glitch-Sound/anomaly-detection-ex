@@ -56,7 +56,7 @@ from albumentations.pytorch.transforms import ToTensorV2
 # =========================
 # ハイパーパラメータ定義
 # =========================
-MODEL_VARIANT_DEFAULT = "deit_base_distilled_patch16_224"
+MODEL_VARIANT_DEFAULT = "deit_base_distilled_patch16_384"
 MODEL_VARIANTS = {
     "deit_base_distilled_patch16_384": {
         "image_size": 384,
@@ -804,11 +804,9 @@ def create_heatmap_overlay(
         scale = (raw_score_map - min_val) / (max_val - min_val)
         scale = np.clip(scale, 0.0, 1.0)
         norm_map = (scale * 255.0).astype(np.uint8)
-        mask = raw_score_map >= min_val
     else:
         norm_map = cv2.normalize(score_map, None, 0, 255, cv2.NORM_MINMAX)
         norm_map = norm_map.astype(np.uint8)
-        mask = None
 
     heatmap = cv2.applyColorMap(norm_map, cv2.COLORMAP_JET)
     resized = cv2.resize(
@@ -817,16 +815,7 @@ def create_heatmap_overlay(
         interpolation=cv2.INTER_LINEAR,
     )
     blended = cv2.addWeighted(resized, alpha, image_bgr, 1 - alpha, 0)
-    if not use_global_scale:
-        return blended
-
-    mask_resized = cv2.resize(
-        mask.astype(np.uint8),
-        (image_bgr.shape[1], image_bgr.shape[0]),
-        interpolation=cv2.INTER_NEAREST,
-    ).astype(bool)
-    overlay = np.where(mask_resized[..., None], blended, image_bgr)
-    return overlay
+    return blended
 
 
 if __name__ == "__main__":
