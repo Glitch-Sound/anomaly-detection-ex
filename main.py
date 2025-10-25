@@ -117,21 +117,13 @@ PRETRAINED_MODEL_FILES: Dict[str, str] = {
     "deit_base_distilled_patch16_384": "deit_base_distilled_patch16_384.pth",
 }
 
-
-def _download_pretrained_model(model_variant: str, weight_path: Path) -> nn.Module:
-    model = timm.create_model(model_variant, pretrained=True)
-    weight_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), weight_path)
-    return model
+PRETRAINED_MODEL_URLS: Dict[str, str] = {
+    "deit_base_distilled_patch16_224": "https://dl.fbaipublicfiles.com/deit/deit_base_distilled_patch16_224-b40b3cf7.pth",
+    "deit_base_distilled_patch16_384": "https://dl.fbaipublicfiles.com/deit/deit_base_distilled_patch16_384-d0272ac0.pth",
+}
 
 
-def load_pretrained_model(model_variant: str) -> nn.Module:
-    model = timm.create_model(model_variant, pretrained=False)
-    weight_name = PRETRAINED_MODEL_FILES.get(model_variant, f"{model_variant}.pth")
-    weight_path = MODEL_DIR / weight_name
-    if not weight_path.exists():
-        return _download_pretrained_model(model_variant, weight_path)
-    checkpoint = torch.load(weight_path, map_location="cpu")
+def _load_state_dict_from_checkpoint(checkpoint) -> Dict[str, torch.Tensor]:
     state_dict = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
     if state_dict is None and isinstance(checkpoint, dict):
         state_dict = checkpoint.get("model")
@@ -139,8 +131,43 @@ def load_pretrained_model(model_variant: str) -> nn.Module:
         if isinstance(checkpoint, dict):
             state_dict = checkpoint
         else:
-            raise RuntimeError(f"{weight_path} から状態辞書を読み取れませんでした。")
+            raise RuntimeError("チェックポイントから状態辞書を取得できません。")
     state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+    return state_dict
+
+
+def _download_pretrained_model(model_variant: str, weight_path: Path) -> None:
+    weight_path.parent.mkdir(parents=True, exist_ok=True)
+    url = PRETRAINED_MODEL_URLS.get(model_variant)
+    if url:
+        tmp_path = weight_path.with_suffix(weight_path.suffix + ".tmp")
+        try:
+            torch.hub.download_url_to_file(
+                url, str(tmp_path), hash_prefix=None, progress=True
+            )
+            os.replace(tmp_path, weight_path)
+        except Exception as exc:  # noqa: PERF203
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"{model_variant} の事前学習モデルをダウンロードできませんでした: {url}"
+            ) from exc
+        return
+
+    model = timm.create_model(model_variant, pretrained=True)
+    torch.save(model.state_dict(), weight_path)
+
+
+def load_pretrained_model(model_variant: str) -> nn.Module:
+    weight_name = PRETRAINED_MODEL_FILES.get(model_variant, f"{model_variant}.pth")
+    weight_path = MODEL_DIR / weight_name
+    if not weight_path.exists():
+        _download_pretrained_model(model_variant, weight_path)
+    if not weight_path.exists():
+        raise FileNotFoundError(f"事前学習モデルが見つかりません: {weight_path}")
+    checkpoint = torch.load(weight_path, map_location="cpu")
+    state_dict = _load_state_dict_from_checkpoint(checkpoint)
+    model = timm.create_model(model_variant, pretrained=False)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
         raise RuntimeError(f"読み込み時に欠損したキーがあります: {missing}")
