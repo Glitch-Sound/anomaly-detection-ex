@@ -50,8 +50,8 @@ else:
     if not hasattr(_albucore_utils, "NUM_MULTI_CHANNEL_DIMENSIONS"):
         setattr(_albucore_utils, "NUM_MULTI_CHANNEL_DIMENSIONS", 3)
 
-import albumentations as A
-from albumentations.pytorch.transforms import ToTensorV2
+import albumentations as A  # noqa: E402
+from albumentations.pytorch.transforms import ToTensorV2  # noqa: E402
 
 # =========================
 # ハイパーパラメータ定義
