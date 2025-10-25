@@ -25,8 +25,10 @@ ENABLE_LOGFILE = False
 _albucore_utils = None
 try:
     _albucore_utils = importlib.import_module("albucore.utils")
+
 except ModuleNotFoundError:
     pass
+
 else:
     if not hasattr(_albucore_utils, "preserve_channel_dim"):
         from functools import wraps
@@ -48,8 +50,10 @@ else:
             return wrapper
 
         setattr(_albucore_utils, "preserve_channel_dim", _preserve_channel_dim)
+
     if not hasattr(_albucore_utils, "MONO_CHANNEL_DIMENSIONS"):
         setattr(_albucore_utils, "MONO_CHANNEL_DIMENSIONS", 2)
+
     if not hasattr(_albucore_utils, "NUM_MULTI_CHANNEL_DIMENSIONS"):
         setattr(_albucore_utils, "NUM_MULTI_CHANNEL_DIMENSIONS", 3)
 
@@ -102,14 +106,19 @@ os.environ.setdefault("TIMM_MODEL_CACHE", model_cache_dir)
 os.environ.setdefault("TORCH_HOME", model_cache_dir)
 os.environ.setdefault("HF_HOME", model_cache_dir)
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", model_cache_dir)
+
 try:
     from timm.models import hub as timm_hub
+
 except ImportError:
     timm_hub = None
+
 else:
     setter = getattr(timm_hub, "set_model_cache_dir", None)
+
     if callable(setter):
         setter(model_cache_dir)
+
     else:
         setter_alt = getattr(timm_hub, "set_default_cache_dir", None)
         if callable(setter_alt):
@@ -131,11 +140,14 @@ def _load_state_dict_from_checkpoint(checkpoint) -> Dict[str, torch.Tensor]:
     state_dict = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
     if state_dict is None and isinstance(checkpoint, dict):
         state_dict = checkpoint.get("model")
+
     if state_dict is None:
         if isinstance(checkpoint, dict):
             state_dict = checkpoint
+
         else:
             raise RuntimeError("チェックポイントから状態辞書を取得できません")
+
     # DDP などで保存された場合のプレフィックスを取り除く
     state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
     return state_dict
@@ -153,12 +165,15 @@ def _download_pretrained_model(model_variant: str, weight_path: Path) -> None:
                 url, str(tmp_path), hash_prefix=None, progress=True
             )
             os.replace(tmp_path, weight_path)
+
         except Exception as exc:  # noqa: PERF203
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
+
             raise RuntimeError(
                 f"{model_variant} の事前学習モデルをダウンロードできませんでした: {url}"
             ) from exc
+
         return
 
     # URL が存在しない場合は timm から直接ロードして保存する
@@ -170,19 +185,25 @@ def load_pretrained_model(model_variant: str) -> nn.Module:
     """事前学習済み ViT モデルをローカルキャッシュから読み込む"""
     weight_name = PRETRAINED_MODEL_FILES.get(model_variant, f"{model_variant}.pth")
     weight_path = MODEL_DIR / weight_name
+
     if not weight_path.exists():
         _download_pretrained_model(model_variant, weight_path)
+
     if not weight_path.exists():
         raise FileNotFoundError(f"事前学習モデルが見つかりません: {weight_path}")
+
     # CPU マップで checkpoint を読み込むことで GPU 非搭載環境でも動作させる
     checkpoint = torch.load(weight_path, map_location="cpu")
     state_dict = _load_state_dict_from_checkpoint(checkpoint)
     model = timm.create_model(model_variant, pretrained=False)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
     if missing:
         raise RuntimeError(f"読み込み時に欠損したキーがあります: {missing}")
+
     if unexpected:
         raise RuntimeError(f"読み込み時に想定外のキーがあります: {unexpected}")
+
     return model
 
 
@@ -192,8 +213,10 @@ def _parse_layer_indices(raw_value: str) -> List[int]:
     tokens = raw_value.replace(",", " ").replace("|", " ").split()
     if not tokens:
         raise ValueError("レイヤ番号が指定されていません")
+
     try:
         return [int(token) for token in tokens]
+
     except ValueError as exc:
         raise ValueError(f"レイヤ番号の解析に失敗しました: {raw_value}") from exc
 
@@ -249,6 +272,7 @@ class ImageFolderDataset(Dataset):
         """画像の読み込みと変換を準備する"""
         if not paths:
             raise ValueError("画像が見つからないため、パスを確認してください")
+
         self.paths = list(paths)
         self.transform = transform
         self.return_meta = return_meta
@@ -263,10 +287,12 @@ class ImageFolderDataset(Dataset):
         image_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if image_bgr is None:
             raise FileNotFoundError(f"画像を読み込めません: {path}")
+
         # OpenCV は BGR のため RGB に変換してから Albumentations に渡す
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         transformed = self.transform(image=image_rgb)
         image_tensor = transformed["image"].float()
+
         if self.return_meta:
             return image_tensor, image_bgr, str(path)
         return image_tensor
@@ -279,27 +305,35 @@ class ViTFeatureExtractor(nn.Module):
         """事前学習済みモデルを読み込み、抽出対象レイヤを初期化する"""
         super().__init__()
         self.model = load_pretrained_model(model_variant)
+
         for param in self.model.parameters():
             param.requires_grad_(False)
+
         self.model.eval()
         self.embed_dim = getattr(self.model, "embed_dim")
         base_tokens = getattr(self.model, "num_tokens", 1)
         has_dist = getattr(self.model, "dist_token", None) is not None
         self.token_offset = base_tokens + (1 if has_dist else 0)
         total_blocks = len(self.model.blocks)
+
         if total_blocks <= 0:
             raise ValueError("ViT モデルにブロックが存在しません")
+
         if not layer_indices:
             layer_indices = [total_blocks - 1]
+
         normalized: List[int] = []
         for idx in sorted(set(layer_indices)):
             if idx < 0:
                 idx = total_blocks + idx
+
             if idx < 0 or idx >= total_blocks:
                 raise ValueError(
                     f"layer index {idx} は許容範囲外です (0-{total_blocks - 1})"
                 )
+
             normalized.append(idx)
+
         self.layer_indices = tuple(normalized)
         self.layer_index_set = set(self.layer_indices)
         self.output_dim = self.embed_dim * len(self.layer_indices)
@@ -311,22 +345,28 @@ class ViTFeatureExtractor(nn.Module):
         x = model.patch_embed(images)
         batch = x.shape[0]
         cls_token = model.cls_token.expand(batch, -1, -1)
+
         if getattr(model, "dist_token", None) is not None:
             dist_token = model.dist_token.expand(batch, -1, -1)
             x = torch.cat((cls_token, dist_token, x), dim=1)
+
         else:
             x = torch.cat((cls_token, x), dim=1)
+
         x = model.pos_drop(x + model.pos_embed)
         collected: List[torch.Tensor] = []
         for idx, block in enumerate(model.blocks):
             x = block(x)
+
             if idx in self.layer_index_set:
                 # 指定レイヤ通過後に正規化し、クラス／蒸留トークンを除く
                 normed = model.norm(x)
                 collected.append(normed[:, self.token_offset :, :])
+
         if not collected:
             normed = model.norm(x)
             collected.append(normed[:, self.token_offset :, :])
+
         return torch.cat(collected, dim=2)
 
 
@@ -335,6 +375,7 @@ def _append_log_row(path: Path, header: Sequence[str], row: Sequence) -> None:
     if ENABLE_LOGFILE:
         exists = path.exists()
         path.parent.mkdir(parents=True, exist_ok=True)
+
         with path.open("a", newline="") as fp:
             writer = csv.writer(fp)
             if not exists:
@@ -363,12 +404,15 @@ def log_training_run(artifacts: "TrainingArtifacts", dataset_size: int) -> None:
         "avg_patch_std",
         "no_heatmap_margin",
     ]
+
     avg_patch_mean = (
         float(np.mean(artifacts.patch_means)) if artifacts.patch_means else 0.0
     )
+
     avg_patch_std = (
         float(np.mean(artifacts.patch_stds)) if artifacts.patch_stds else 0.0
     )
+
     # レイヤ情報は可読性を重視して区切り文字で連結する
     layer_indices_str = "|".join(map(str, artifacts.layer_indices))
     row = [
@@ -469,14 +513,17 @@ class CouplingLayer(nn.Module):
         x1, x2 = x.chunk(2, dim=1)
         s, t = self.net(x1).chunk(2, dim=1)
         s = torch.tanh(s)
+
         if not reverse:
             # forward: y2 = x2 * exp(s) + t
             y2 = x2 * torch.exp(s) + t
             logdet = logdet + s.sum(dim=1)
+
         else:
             # inverse: x2 = (y2 - t) * exp(-s)
             y2 = (x2 - t) * torch.exp(-s)
             logdet = logdet - s.sum(dim=1)
+
         y = torch.cat([x1, y2], dim=1)
         return y, logdet
 
@@ -508,12 +555,15 @@ class FastFlowNF(nn.Module):
     def __init__(self, dim: int, hidden_ratio: float, steps: int) -> None:
         """指定回数の permute/coupling ブロックを積み上げる"""
         super().__init__()
+
         if dim % 2 != 0:
             raise ValueError("FastFlow の入力次元は偶数である必要があります")
         layers: List[nn.Module] = []
+
         for _ in range(steps):
             layers.append(PermuteLayer(dim))
             layers.append(CouplingLayer(dim, hidden_ratio))
+
         self.layers = nn.ModuleList(layers)
         self.dim = dim
 
@@ -527,6 +577,7 @@ class FastFlowNF(nn.Module):
             for layer in self.layers:
                 x, logdet = layer(x, logdet, reverse=False)
             return x, logdet
+
         # reverse: 逆順に処理して元の空間へ戻す
         for layer in reversed(self.layers):
             x, logdet = layer(x, logdet, reverse=True)
@@ -577,6 +628,7 @@ def set_config(path_config: str) -> None:
     try:
         with config_path.open("r", encoding="utf-8") as fp:
             parser.read_file(fp)
+
     except Exception as exc:  # noqa: PERF203
         raise RuntimeError(
             f"設定ファイルの読み込みに失敗しました: {config_path}"
@@ -590,10 +642,13 @@ def set_config(path_config: str) -> None:
     def _cast(value: str, caster):
         """設定値を型変換する"""
         text = value.strip()
+
         if caster is int:
             return int(text)
+
         if caster is float:
             return float(text)
+
         return caster(text)
 
     global_vars = globals()
@@ -601,8 +656,10 @@ def set_config(path_config: str) -> None:
         if key not in section or section[key] == "":
             continue
         raw_value = section[key]
+
         try:
             converted = _cast(raw_value, caster)
+
         except ValueError as exc:
             raise ValueError(f"設定値 {key} の形式が不正です: {raw_value}") from exc
         # 設定ファイルの内容でグローバル変数を書き換える
@@ -613,8 +670,10 @@ def set_config(path_config: str) -> None:
         raw_layers = section.get(config_key, "")
         if not raw_layers or raw_layers.strip() == "":
             return
+
         try:
             parsed_layers = _parse_layer_indices(raw_layers)
+
         except ValueError as exc:
             raise ValueError(
                 f"設定値 {config_key} の形式が不正です: {raw_layers}"
@@ -634,10 +693,12 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
     model_variant = MODEL_VARIANT_DEFAULT
     if model_variant not in MODEL_VARIANTS:
         raise ValueError(f"サポート外のモデルです: {model_variant}")
+
     variant_conf = MODEL_VARIANTS[model_variant]
     image_size = variant_conf["image_size"]
     layer_indices = variant_conf.get("layer_indices", [])
     transform = build_transform(image_size)
+
     # 正常品画像のみを読み込んで教師なし学習を行う
     good_paths = list_image_files(Path(path_train_good))
     dataset = ImageFolderDataset(good_paths, transform, return_meta=False)
@@ -649,24 +710,31 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
         num_workers=NUM_WORKERS,
         pin_memory=torch.cuda.is_available(),
     )
+
     extractor = ViTFeatureExtractor(model_variant, layer_indices).to(device)
     flow_model = FastFlowNF(extractor.output_dim, FLOW_HIDDEN_RATIO, FLOW_STEPS).to(
         device
     )
+
     optimizer = Adam(flow_model.parameters(), lr=LEARNING_RATE)
     flow_model.train()
     num_patches: int | None = None
+
     for epoch in range(TRAIN_EPOCHS):
         epoch_loss = 0.0
         batch_count = 0
+
         for images in loader:
             images = images.to(device)
             with torch.no_grad():
                 tokens = extractor(images)
+
             if num_patches is None:
                 num_patches = tokens.shape[1]
+
             tokens = tokens.detach()
             features = tokens.reshape(-1, extractor.output_dim)
+
             # ネガティブログ尤度を最小化する
             log_prob = flow_model.log_prob(features)
             loss = -log_prob.mean()
@@ -675,20 +743,25 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
             optimizer.step()
             epoch_loss += loss.item()
             batch_count += 1
+
         avg_loss = epoch_loss / max(batch_count, 1)
         print(f"epoch {epoch + 1}/{TRAIN_EPOCHS} loss={avg_loss:.6f}")
+
     flow_model.eval()
     patch_scores: List[torch.Tensor] = []
     with torch.no_grad():
         for images in loader:
             images = images.to(device)
             tokens = extractor(images)
+
             if num_patches is None:
                 num_patches = tokens.shape[1]
             anomaly = flow_model.anomaly_scores(tokens)
             patch_scores.append(anomaly.cpu())
+
     if not patch_scores:
         raise ValueError("学習データが存在しないため学習を継続できません")
+
     patch_scores_tensor = torch.cat(patch_scores, dim=0)
     patch_means = patch_scores_tensor.mean(dim=0)
     patch_stds = patch_scores_tensor.std(dim=0)
@@ -699,8 +772,10 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
     standardized_scores = (patch_scores_tensor - patch_means) / patch_stds
     per_image_scores = standardized_scores.max(dim=1).values
     threshold = float(torch.quantile(per_image_scores, THRESHOLD_QUANTILE))
+
     if num_patches is None:
         raise RuntimeError("パッチ数の取得に失敗しました")
+
     artifacts = TrainingArtifacts(
         flow_state_dict=flow_model.state_dict(),
         model_variant=model_variant,
@@ -716,8 +791,10 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
         patch_means=patch_means.tolist(),
         patch_stds=patch_stds.tolist(),
     )
+
     param_path = Path(path_param)
     param_path.parent.mkdir(parents=True, exist_ok=True)
+
     # 後続の推論で再利用できるように状態を保存する
     torch.save(artifacts.__dict__, param_path)
     print(f"model saved to {param_path}")
@@ -732,45 +809,54 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
         raise FileNotFoundError(
             "学習済みパラメータが存在しないため、先に train() を実行してください"
         )
+
     state = torch.load(param_path, map_location="cpu")
     if "num_patches" not in state and "image_size" in state and "patch_size" in state:
         approx = (state["image_size"] // state["patch_size"]) ** 2
         state["num_patches"] = approx
+
     num_patches_state = state.get("num_patches")
     if num_patches_state is None:
         raise RuntimeError(
             "学習済みパラメータにパッチ数が含まれていないため、再学習してください"
         )
+
     if "layer_indices" not in state or not state["layer_indices"]:
         default_layers = MODEL_VARIANTS.get(
             state.get("model_variant", MODEL_VARIANT_DEFAULT),
             {},
         ).get("layer_indices", [])
+
         if not default_layers:
             default_layers = [0]
         state["layer_indices"] = default_layers
+
     if (
         "patch_means" not in state
         or not state["patch_means"]
         or len(state["patch_means"]) != num_patches_state
     ):
         state["patch_means"] = [0.0] * num_patches_state
+
     if (
         "patch_stds" not in state
         or not state["patch_stds"]
         or len(state["patch_stds"]) != num_patches_state
     ):
         state["patch_stds"] = [1.0] * num_patches_state
+
     artifacts = TrainingArtifacts(**state)
     image_size = artifacts.image_size
     transform = build_transform(image_size)
     test_root = Path(path_test)
     good_test = list_image_files(test_root / "good")
     error_test = list_image_files(test_root / "error")
+
     # good/error をまとめて処理し、後段でラベルを参照する
     all_paths = [(p, "good") for p in good_test] + [(p, "error") for p in error_test]
     if not all_paths:
         raise ValueError("試験用画像が見つかりません")
+
     dataset = ImageFolderDataset([p for p, _ in all_paths], transform, return_meta=True)
     loader = DataLoader(
         dataset,
@@ -798,12 +884,15 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
         .clamp_min(1e-6)
         .unsqueeze(0)
     )
+
     result_root = Path(path_result)
     (result_root / "good").mkdir(parents=True, exist_ok=True)
     (result_root / "error").mkdir(parents=True, exist_ok=True)
     patch_side = int(round(math.sqrt(artifacts.num_patches)))
+
     if patch_side * patch_side != artifacts.num_patches:
         raise ValueError("パッチ数が正方格子にマッピングできません")
+
     labels = [label for _, label in all_paths]
     with torch.no_grad():
         for idx, (image_tensor, original, paths) in enumerate(loader):
@@ -849,13 +938,16 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
             save_dir.mkdir(parents=True, exist_ok=True)
             path_obj = Path(paths[0])
             suffix = "_heatmap.png"
+
             if skip_heatmap:
                 suffix = "_original.png"
             save_path = save_dir / f"{path_obj.stem}{suffix}"
             original_image = np.asarray(original)[0]
+
             if skip_heatmap:
                 # 閾値超過が小さい場合は元画像のみ保存する
                 cv2.imwrite(str(save_path), original_image)
+
             else:
                 overlay = create_heatmap_overlay(
                     original_image,
@@ -863,6 +955,7 @@ def test(path_config: str, path_test: str, path_param: str, path_result: str) ->
                     raw_score_map=raw_score_map,
                 )
                 cv2.imwrite(str(save_path), overlay)
+
             print(
                 f"{path_obj.name}: score_norm={image_score_norm:.4f} raw={image_score_raw:.4f} threshold={artifacts.threshold:.4f} predict={predicted} skip_heatmap={skip_heatmap}"
             )
@@ -892,6 +985,7 @@ def create_heatmap_overlay(
         and HEATMAP_RAW_MAX is not None
         and HEATMAP_RAW_MAX > HEATMAP_RAW_MIN
     )
+
     if use_global_scale:
         min_val = float(HEATMAP_RAW_MIN)
         max_val = float(HEATMAP_RAW_MAX)
@@ -899,6 +993,7 @@ def create_heatmap_overlay(
         scale = (raw_score_map - min_val) / (max_val - min_val)
         scale = np.clip(scale, 0.0, 1.0)
         norm_map = (scale * 255.0).astype(np.uint8)
+
     else:
         norm_map = cv2.normalize(score_map, None, 0, 255, cv2.NORM_MINMAX)
         norm_map = norm_map.astype(np.uint8)
