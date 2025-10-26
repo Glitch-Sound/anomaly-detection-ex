@@ -937,15 +937,13 @@ def test(
             # 閾値補正.
             threshold = artifacts.threshold + NO_HEATMAP_MARGIN
 
-            predicted = "error" if image_score_norm > threshold else "good"
+            predicted = "NG" if image_score_norm > threshold else "OK"
             skip_heatmap = (image_score_norm - threshold) <= 0.0
             save_dir = result_root / label
             save_dir.mkdir(parents=True, exist_ok=True)
             path_obj = Path(paths[0])
-            suffix = "_heatmap.png"
+            suffix = "_result.png"
 
-            if skip_heatmap:
-                suffix = "_original.png"
             save_path = save_dir / f"{path_obj.stem}{suffix}"
             original_image = np.asarray(original)[0]
 
@@ -962,7 +960,7 @@ def test(
                 cv2.imwrite(str(save_path), overlay)
 
             print(
-                f"{path_obj.name}: score_norm={image_score_norm:.4f} raw={image_score_raw:.4f} threshold={threshold:.4f} threshold_row={artifacts.threshold:.4f} predict={predicted}"
+                f"{path_obj.name}: predict={predicted} threshold_row={artifacts.threshold:.4f} threshold={threshold:.4f} score_norm={image_score_norm:.4f} raw={image_score_raw:.4f}"
             )
             log_detection_result(
                 artifacts,
@@ -1023,7 +1021,7 @@ if __name__ == "__main__":
         print(sys.version)
 
         print("start train.")
-        # train("AI", path_config, path_train, path_param)
+        train("AI", path_config, path_train, path_param)
 
         print("start test.")
         test("AI", path_config, path_test, path_param, path_result)
