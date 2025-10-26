@@ -85,7 +85,6 @@ NO_HEATMAP_MARGIN = 5.0
 NUM_WORKERS = 0
 HEATMAP_RAW_MIN = None
 HEATMAP_RAW_MAX = None
-CONFIG_SECTION = "AI"
 CONFIG_FIELDS = {
     "PATCH_SIZE": ("PATCH_SIZE", int),
     "TRAIN_BATCH_SIZE": ("TRAIN_BATCH_SIZE", int),
@@ -618,7 +617,7 @@ class TrainingArtifacts:
     patch_stds: List[float] = field(default_factory=list)
 
 
-def set_config(path_config: str) -> None:
+def set_config(target: str, path_config: str) -> None:
     """設定ファイルを読み込み、グローバルハイパーパラメータを更新する"""
     config_path = Path(path_config)
     if not config_path.exists():
@@ -634,10 +633,10 @@ def set_config(path_config: str) -> None:
             f"設定ファイルの読み込みに失敗しました: {config_path}"
         ) from exc
 
-    if CONFIG_SECTION not in parser:
-        raise KeyError(f"設定ファイルにセクション[{CONFIG_SECTION}]が存在しません")
+    if target not in parser:
+        raise KeyError(f"設定ファイルにセクション[{target}]が存在しません")
 
-    section = parser[CONFIG_SECTION]
+    section = parser[target]
 
     def _cast(value: str, caster):
         """設定値を型変換する"""
@@ -686,9 +685,9 @@ def set_config(path_config: str) -> None:
         _apply_layer_config(specific_key, variant_name)
 
 
-def train(path_config: str, path_train_good: str, path_param: str) -> None:
+def train(target: str, path_config: str, path_train_good: str, path_param: str) -> None:
     """学習データから FastFlow モデルを訓練し、パラメータを保存する"""
-    set_config(path_config)
+    set_config(target, path_config)
     device = get_device()
     model_variant = MODEL_VARIANT_DEFAULT
     if model_variant not in MODEL_VARIANTS:
@@ -801,9 +800,11 @@ def train(path_config: str, path_train_good: str, path_param: str) -> None:
     log_training_run(artifacts, dataset_size)
 
 
-def test(path_config: str, path_test: str, path_param: str, path_result: str) -> None:
+def test(
+    target: str, path_config: str, path_test: str, path_param: str, path_result: str
+) -> None:
     """保存済みパラメータを読み込み、検査データに対して推論を行う"""
-    set_config(path_config)
+    set_config(target, path_config)
     param_path = Path(path_param)
     if not param_path.exists():
         raise FileNotFoundError(
@@ -1018,10 +1019,10 @@ if __name__ == "__main__":
         print(sys.version)
 
         print("start train.")
-        train(path_config, path_train, path_param)
+        train("AI", path_config, path_train, path_param)
 
         print("start test.")
-        test(path_config, path_test, path_param, path_result)
+        test("AI", path_config, path_test, path_param, path_result)
 
     except Exception:
         traceback.print_exc()
